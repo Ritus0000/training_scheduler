@@ -6,7 +6,7 @@
 #   /start      — приветствие + ежедневное напоминание в 18:00 (Europe/Warsaw)
 #   /exercises  — список упражнений
 #   /today      — рекомендации на сегодня
-#   /done <...> — отметить выполненное упражнение (потом «сегодня» или «вчера»)
+#   /done <...> — отметить выполненное упражнение (потом "сегодня" или "вчера")
 #
 # Перед запуском:
 #   pip install -r requirements.txt
@@ -16,9 +16,10 @@
 
 import logging
 import os
-from datetime import date, timedelta, time
+from datetime import date, datetime, timedelta, time
 from typing import List, Dict, Any, Optional
 
+from zoneinfo import ZoneInfo
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -49,18 +50,25 @@ logger = logging.getLogger("training_scheduler_bot")
 
 def build_exercise_alias_mapping() -> Dict[str, str]:
     """
-    Маппинг пользовательского ввода → exercise_key.
+    Строит маппинг "ввод пользователя" → exercise_key.
+    Можно вводить:
+      - ключ (squat, calves)
+      - часть русского имени (присед, икры)
     """
     alias_to_exercise_key: Dict[str, str] = {}
 
     for exercise_key, definition in EXERCISE_DEFINITIONS_BY_KEY.items():
+        # сам ключ
         alias_to_exercise_key[exercise_key.lower()] = exercise_key
 
+        # чистое русское имя без кавычек
         display_name_ru: str = definition["display_name_ru"]
-        cleaned_ru: str = display_name_ru.replace("«", "").replace("»", "").lower()
-        alias_to_exercise_key[cleaned_ru] = exercise_key
+        cleaned_russian_name: str = (
+            display_name_ru.replace("«", "").replace("»", "").lower()
+        )
+        alias_to_exercise_key[cleaned_russian_name] = exercise_key
 
-    # Частые алиасы
+    # Ручные алиасы (наиболее вероятные варианты ввода)
     alias_to_exercise_key.setdefault("присед", "squat")
     alias_to_exercise_key.setdefault("приседания", "squat")
     alias_to_exercise_key.setdefault("румынка", "hinge")
@@ -82,24 +90,29 @@ def build_exercise_alias_mapping() -> Dict[str, str]:
 
 def resolve_exercise_key_from_user_text(user_input_exercise_text: str) -> Optional[str]:
     alias_mapping: Dict[str, str] = build_exercise_alias_mapping()
-    normalized: str = user_input_exercise_text.strip().lower()
-    return alias_mapping.get(normalized)
+    normalized_user_input: str = user_input_exercise_text.strip().lower()
+    return alias_mapping.get(normalized_user_input)
 
 
 async def start_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    /start — приветствие + регистрация ежедневного напоминания в 18:00 (по локальному времени).
+    """
     user_telegram_id: int = update.effective_user.id
     chat_id: int = update.effective_chat.id
 
-    text: str = (
-        "Привет. Это минималистичный планировщик тренировок.\n\n"
-        "Я слежу за частотой упражнений, отдыхом и тем, чтобы не ставить тяжёлые CNS-дни подряд.\n\n"
+    greeting_text: str = (
+        "Привет! Я минималистичный планировщик тренировок.\n\n"
+        "Я помогаю соблюдать частоту упражнений, отдых и беречь ЦНС:\n"
+        "— следить, что нужно сделать сегодня;\n"
+        "— не ставить тяжёлые CNS-упражнения два дня подряд.\n\n"
         "Команды:\n"
         "/today — рекомендации на сегодня\n"
-        "/done <упражнение> — отметить выполненное (потом выберешь: сегодня или вчера)\n"
+        "/done <упражнение> — отметить, что вы сделали (потом выберете: сегодня или вчера)\n"
         "/exercises — список упражнений и ключей\n\n"
-        "Ежедневное напоминание приходит в 18:00 по твоему времени."
+        "Я также буду присылать напоминание каждый день в 18:00 по вашему времени."
     )
-    await update.message.reply_text(text)
+    await update.message.reply_text(greeting_text)
 
     reminder_time_local: time = time(hour=18, minute=0, tzinfo=USER_TIMEZONE)
 
@@ -118,6 +131,9 @@ async def start_command_handler(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def exercises_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    /exercises — список всех упражнений с параметрами.
+    """
     lines: List[str] = ["Список упражнений:\n"]
 
     for exercise_key, definition in EXERCISE_DEFINITIONS_BY_KEY.items():
@@ -134,6 +150,9 @@ async def exercises_command_handler(update: Update, context: ContextTypes.DEFAUL
 
 
 async def today_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    /today — показать рекомендации на сегодня.
+    """
     recommendations: Dict[str, Any] = get_training_recommendations_for_today()
 
     must_do_today: List[str] = recommendations["must_do_today"]
@@ -142,35 +161,42 @@ async def today_command_handler(update: Update, context: ContextTypes.DEFAULT_TY
     not_ready_by_rest: List[str] = recommendations["not_ready_by_rest"]
     log_gap_warning: Optional[str] = recommendations.get("log_gap_warning")
 
-    def format_list(keys: List[str]) -> str:
-        if not keys:
+    def format_exercise_list(exercise_keys: List[str]) -> str:
+        if not exercise_keys:
             return "—"
-        return "\n".join(
-            f"{EXERCISE_DEFINITIONS_BY_KEY[k]['display_name_ru']} (ключ: {k})" for k in keys
-        )
+        lines_local: List[str] = []
+        for exercise_key in exercise_keys:
+            definition: Dict[str, Any] = EXERCISE_DEFINITIONS_BY_KEY[exercise_key]
+            lines_local.append(f"{definition['display_name_ru']} (ключ: {exercise_key})")
+        return "\n".join(lines_local)
 
-    lines: List[str] = []
+    message_lines: List[str] = []
 
     if log_gap_warning:
-        lines.append("⚠ " + log_gap_warning + "\n")
+        message_lines.append("⚠ " + log_gap_warning + "\n")
 
-    lines.append("Рекомендации на сегодня:\n")
-    lines.append("ОБЯЗАТЕЛЬНО СДЕЛАТЬ:")
-    lines.append(format_list(must_do_today))
-    lines.append("")
-    lines.append("МОЖНО СДЕЛАТЬ (дополнительно):")
-    lines.append(format_list(optional_today))
-    lines.append("")
-    lines.append("ЗАПРЕЩЕНО СЕГОДНЯ (high CNS был вчера):")
-    lines.append(format_list(cns_blocked_today))
-    lines.append("")
-    lines.append("ЕЩЁ НЕ ВОССТАНОВИЛОСЬ (по rest):")
-    lines.append(format_list(not_ready_by_rest))
+    message_lines.append("Рекомендации на сегодня:\n")
+    message_lines.append("ОБЯЗАТЕЛЬНО СДЕЛАТЬ:")
+    message_lines.append(format_exercise_list(must_do_today))
+    message_lines.append("")
+    message_lines.append("МОЖНО СДЕЛАТЬ (дополнительно):")
+    message_lines.append(format_exercise_list(optional_today))
+    message_lines.append("")
+    message_lines.append("ЗАПРЕЩЕНО СЕГОДНЯ (high CNS был вчера):")
+    message_lines.append(format_exercise_list(cns_blocked_today))
+    message_lines.append("")
+    message_lines.append("ЕЩЁ НЕ ВОССТАНОВИЛОСЬ (по rest):")
+    message_lines.append(format_exercise_list(not_ready_by_rest))
 
-    await update.message.reply_text("\n".join(lines))
+    await update.message.reply_text("\n".join(message_lines))
 
 
 async def done_command_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """
+    /done <упражнение> — первый шаг:
+    - распознать упражнение по ключу или части русского имени,
+    - спросить: это было сегодня или вчера.
+    """
     if not context.args:
         await update.message.reply_text(
             "Нужно указать упражнение.\n"
@@ -179,53 +205,60 @@ async def done_command_entry(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         return ConversationHandler.END
 
-    user_text: str = " ".join(context.args).strip().lower()
-    resolved_key: Optional[str] = resolve_exercise_key_from_user_text(user_text)
+    user_input_exercise_text: str = " ".join(context.args).strip().lower()
+    resolved_exercise_key: Optional[str] = resolve_exercise_key_from_user_text(user_input_exercise_text)
 
-    if resolved_key is None:
+    if resolved_exercise_key is None:
         await update.message.reply_text(
-            f"Не понял упражнение: «{user_text}».\n"
-            "Посмотри /exercises и укажи ключ (например, squat) или часть русского названия (например, присед)."
+            f"Не понял упражнение: «{user_input_exercise_text}».\n"
+            "Посмотрите /exercises и укажите ключ (например, squat) или часть русского названия (например, присед)."
         )
         return ConversationHandler.END
 
-    context.user_data["pending_exercise_key_for_done"] = resolved_key
-    display_name_ru: str = EXERCISE_DEFINITIONS_BY_KEY[resolved_key]["display_name_ru"]
+    context.user_data["pending_exercise_key_for_done"] = resolved_exercise_key
+    display_name_ru: str = EXERCISE_DEFINITIONS_BY_KEY[resolved_exercise_key]["display_name_ru"]
 
     await update.message.reply_text(
-        f"Отмечаем: {display_name_ru}.\n"
-        f"Напиши одним словом: «сегодня» или «вчера»."
+        f"Зафиксировал: {display_name_ru}.\n"
+        f"Скажите, когда это было: напишите одним словом «сегодня» или «вчера»."
     )
 
     return CHOOSING_DAY_FOR_DONE
 
 
 async def done_command_choose_day(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    user_reply: str = (update.message.text or "").strip().lower()
+    """
+    Второй шаг /done:
+    - получить ответ «сегодня» / «вчера»,
+    - записать выполнение в JSON.
+    """
+    user_reply_text: str = (update.message.text or "").strip().lower()
     exercise_key: Optional[str] = context.user_data.get("pending_exercise_key_for_done")
 
     if exercise_key is None:
-        await update.message.reply_text("Внутренняя ошибка: нет сохранённого упражнения. Ещё раз /done.")
+        await update.message.reply_text("Внутренняя ошибка: нет сохранённого упражнения. Попробуйте ещё раз /done.")
         return ConversationHandler.END
 
-    current_date: date = get_current_local_date()
+    current_local_date: date = get_current_local_date()
 
-    if user_reply in ("сегодня", "today"):
-        performed_date: date = current_date
-    elif user_reply in ("вчера", "yesterday"):
-        performed_date = current_date - timedelta(days=1)
+    if user_reply_text in ("сегодня", "today"):
+        performed_local_date: date = current_local_date
+    elif user_reply_text in ("вчера", "yesterday"):
+        performed_local_date = current_local_date - timedelta(days=1)
     else:
-        await update.message.reply_text("Ответ не распознан. Напиши «сегодня» или «вчера».")
+        await update.message.reply_text(
+            "Ответ не распознан. Пожалуйста, напишите «сегодня» или «вчера»."
+        )
         return CHOOSING_DAY_FOR_DONE
 
     record_exercise_completion_for_date(
         exercise_key=exercise_key,
-        performed_local_date=performed_date,
+        performed_local_date=performed_local_date,
     )
 
     display_name_ru: str = EXERCISE_DEFINITIONS_BY_KEY[exercise_key]["display_name_ru"]
     await update.message.reply_text(
-        f"Зафиксировано: {display_name_ru}, дата выполнения: {performed_date.isoformat()}."
+        f"Зафиксировано: {display_name_ru}, дата выполнения: {performed_local_date.isoformat()}."
     )
 
     context.user_data.pop("pending_exercise_key_for_done", None)
@@ -233,8 +266,13 @@ async def done_command_choose_day(update: Update, context: ContextTypes.DEFAULT_
 
 
 async def daily_reminder_job_callback(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Ежедневное напоминание в 18:00 по локальному времени.
+    Использует те же рекомендации, что /today, но в сжатом виде.
+    """
     job_data: Dict[str, Any] = context.job.data or {}
     chat_id: Optional[int] = job_data.get("chat_id")
+
     if chat_id is None:
         return
 
@@ -244,26 +282,26 @@ async def daily_reminder_job_callback(context: ContextTypes.DEFAULT_TYPE) -> Non
 
     if must_do_today:
         lines: List[str] = ["Напоминание: сегодня ОБЯЗАТЕЛЬНО сделать:"]
-        for key in must_do_today:
-            lines.append(f"- {EXERCISE_DEFINITIONS_BY_KEY[key]['display_name_ru']}")
+        for exercise_key in must_do_today:
+            lines.append(f"- {EXERCISE_DEFINITIONS_BY_KEY[exercise_key]['display_name_ru']}")
         if optional_today:
             lines.append("\nДополнительно можно сделать:")
-            for key in optional_today:
-                lines.append(f"- {EXERCISE_DEFINITIONS_BY_KEY[key]['display_name_ru']}")
-        text = "\n".join(lines)
+            for exercise_key in optional_today:
+                lines.append(f"- {EXERCISE_DEFINITIONS_BY_KEY[exercise_key]['display_name_ru']}")
+        text: str = "\n".join(lines)
     else:
         if optional_today:
             lines = [
                 "Сегодня обязательных упражнений нет.",
-                "Если хочешь — можешь сделать что-то из списка:"
+                "Если хотите — можно сделать что-то из списка:"
             ]
-            for key in optional_today:
-                lines.append(f"- {EXERCISE_DEFINITIONS_BY_KEY[key]['display_name_ru']}")
+            for exercise_key in optional_today:
+                lines.append(f"- {EXERCISE_DEFINITIONS_BY_KEY[exercise_key]['display_name_ru']}")
             text = "\n".join(lines)
         else:
             text = (
                 "Сегодня по плану нет ни обязательных, ни рекомендованных упражнений.\n"
-                "Можешь отдыхать или сделать лёгкую активность по желанию."
+                "Можно отдыхать или сделать лёгкую активность по желанию."
             )
 
     await context.bot.send_message(chat_id=chat_id, text=text)
@@ -271,14 +309,17 @@ async def daily_reminder_job_callback(context: ContextTypes.DEFAULT_TYPE) -> Non
 
 def main() -> None:
     """
-    Точка входа. Используется локально и на Railway (через main.py).
+    Точка входа.
+    Используется и локально, и на Railway (через main.py).
     """
     telegram_bot_token: Optional[str] = os.getenv("TELEGRAM_BOT_TOKEN")
     if not telegram_bot_token:
         raise RuntimeError("Нужно задать TELEGRAM_BOT_TOKEN в переменных окружения.")
 
-    # Критичный момент: отключаем Updater, чтобы не ловить баг на Python 3.13
-    application = ApplicationBuilder().token(telegram_bot_token).updater(None).build()
+    # ВАЖНО: здесь больше НЕ отключаем Updater.
+    # Современные версии python-telegram-bot уже нормально работают с Python 3.13,
+    # и Application.run_polling() требует, чтобы Updater был создан.
+    application = ApplicationBuilder().token(telegram_bot_token).build()
 
     application.add_handler(CommandHandler("start", start_command_handler))
     application.add_handler(CommandHandler("today", today_command_handler))

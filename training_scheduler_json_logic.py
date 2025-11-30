@@ -1,26 +1,11 @@
 # training_scheduler_json_logic.py
 #
-# Логика:
-# - хранение состояния тренировок в JSON-файле
-# - частота упражнений за неделю
-# - минимальный rest между сессиями
-# - защита от двух high CNS тренировок подряд
-# - предупреждение, если давно ничего не отмечалось
-#
-# Формат JSON (training_state.json):
-# {
-#   "metadata": {
-#     "iso_year": 2025,
-#     "iso_week": 48
-#   },
-#   "exercises": {
-#     "squat": {
-#       "last_done_local_date": "2025-11-29",
-#       "times_completed_this_week": 2
-#     },
-#     ...
-#   }
-# }
+# Вся логика планировщика:
+# - хранение состояния тренировок в JSON-файле;
+# - недельная частота упражнений;
+# - минимальный rest между сессиями;
+# - защита от двух high-CNS дней подряд;
+# - предупреждение, если давно ничего не логировалось.
 
 import json
 import os
@@ -29,16 +14,15 @@ from typing import Dict, Any, List, Optional
 
 from zoneinfo import ZoneInfo
 
-# Файл состояния (можно переопределить через переменную окружения)
+# Путь к JSON-файлу (можно переопределить через переменную окружения)
 TRAINING_STATE_FILE_PATH: str = os.getenv("TRAINING_STATE_FILE_PATH", "training_state.json")
 
-# Часовой пояс пользователя (фиксируем Gdańsk/Poland)
+# Часовой пояс пользователя
 USER_TIMEZONE: ZoneInfo = ZoneInfo("Europe/Warsaw")
 
 
-# ===== 1. ОПРЕДЕЛЕНИЕ УПРАЖНЕНИЙ (СТАТИЧЕСКИЙ КОНФИГ) =====
+# ===== 1. ОПРЕДЕЛЕНИЕ УПРАЖНЕНИЙ =====
 
-# Ключ → словарь параметров
 EXERCISE_DEFINITIONS_BY_KEY: Dict[str, Dict[str, Any]] = {
     "squat": {
         "exercise_key": "squat",
@@ -51,7 +35,7 @@ EXERCISE_DEFINITIONS_BY_KEY: Dict[str, Dict[str, Any]] = {
     "hinge": {
         "exercise_key": "hinge",
         "display_name_ru": "«Румынская тяга / Hinge»",
-        "description_ru": "Румынская тяга, гиперэкстензии, работа по задней цепи.",
+        "description_ru": "Румынская тяга, гиперэкстензии, задняя цепь.",
         "times_per_week_target": 1,
         "minimal_rest_hours_between_sessions": 72,
         "cns_load_level": "high",
@@ -115,47 +99,38 @@ EXERCISE_DEFINITIONS_BY_KEY: Dict[str, Dict[str, Any]] = {
 }
 
 
-# ===== 2. УТИЛИТЫ ВРЕМЕНИ =====
+# ===== 2. ВРЕМЯ =====
 
 def get_current_local_date() -> date:
-    current_datetime_utc: datetime = datetime.now(tz=ZoneInfo("UTC"))
-    current_datetime_local: datetime = current_datetime_utc.astimezone(USER_TIMEZONE)
-    return current_datetime_local.date()
+    now_utc: datetime = datetime.now(tz=ZoneInfo("UTC"))
+    now_local: datetime = now_utc.astimezone(USER_TIMEZONE)
+    return now_local.date()
 
 
-# ===== 3. РАБОТА СО СОСТОЯНИЕМ (JSON) =====
+# ===== 3. СОСТОЯНИЕ (JSON) =====
 
 def initialize_default_training_state() -> Dict[str, Any]:
-    """
-    Создаёт начальное состояние для всех упражнений.
-    """
     current_local_date: date = get_current_local_date()
     iso_year, iso_week, _ = current_local_date.isocalendar()
 
     exercises_state: Dict[str, Dict[str, Any]] = {}
     for exercise_key in EXERCISE_DEFINITIONS_BY_KEY.keys():
         exercises_state[exercise_key] = {
-            "last_done_local_date": None,           # строка 'YYYY-MM-DD' или None
+            "last_done_local_date": None,
             "times_completed_this_week": 0,
         }
 
-    training_state: Dict[str, Any] = {
+    return {
         "metadata": {
             "iso_year": iso_year,
             "iso_week": iso_week,
         },
         "exercises": exercises_state,
     }
-    return training_state
 
 
 def ensure_all_exercises_present(training_state: Dict[str, Any]) -> None:
-    """
-    Гарантирует, что в состоянии есть все упражнения, определённые в EXERCISE_DEFINITIONS_BY_KEY.
-    Если добавишь новое упражнение в конфиг, состояние автоматически его подхватит.
-    """
     exercises_state: Dict[str, Any] = training_state.setdefault("exercises", {})
-
     for exercise_key in EXERCISE_DEFINITIONS_BY_KEY.keys():
         if exercise_key not in exercises_state:
             exercises_state[exercise_key] = {
@@ -165,9 +140,6 @@ def ensure_all_exercises_present(training_state: Dict[str, Any]) -> None:
 
 
 def perform_week_rollover_if_needed(training_state: Dict[str, Any]) -> None:
-    """
-    Если началась новая ISO-неделя (по локальному времени) — обнуляем weekly-счётчики.
-    """
     metadata: Dict[str, Any] = training_state.setdefault("metadata", {})
     current_local_date: date = get_current_local_date()
     current_iso_year, current_iso_week, _ = current_local_date.isocalendar()
@@ -176,7 +148,6 @@ def perform_week_rollover_if_needed(training_state: Dict[str, Any]) -> None:
     stored_iso_week: int = metadata.get("iso_week", current_iso_week)
 
     if (stored_iso_year, stored_iso_week) != (current_iso_year, current_iso_week):
-        # Новая неделя — обнуляем weekly-счётчики
         exercises_state: Dict[str, Any] = training_state.setdefault("exercises", {})
         for exercise_state in exercises_state.values():
             exercise_state["times_completed_this_week"] = 0
@@ -186,141 +157,103 @@ def perform_week_rollover_if_needed(training_state: Dict[str, Any]) -> None:
 
 
 def load_training_state() -> Dict[str, Any]:
-    """
-    Загружает состояние из JSON-файла.
-    При отсутствии файла — создаёт дефолтное состояние.
-    При смене недели — автоматически обнуляет weekly-счётчики.
-    """
     if not os.path.exists(TRAINING_STATE_FILE_PATH):
-        training_state: Dict[str, Any] = initialize_default_training_state()
-        save_training_state(training_state)
-        return training_state
+        state: Dict[str, Any] = initialize_default_training_state()
+        save_training_state(state)
+        return state
 
-    with open(TRAINING_STATE_FILE_PATH, "r", encoding="utf-8") as file_handle:
-        training_state: Dict[str, Any] = json.load(file_handle)
+    with open(TRAINING_STATE_FILE_PATH, "r", encoding="utf-8") as f:
+        state: Dict[str, Any] = json.load(f)
 
-    ensure_all_exercises_present(training_state)
-    perform_week_rollover_if_needed(training_state)
-    return training_state
+    ensure_all_exercises_present(state)
+    perform_week_rollover_if_needed(state)
+    return state
 
 
 def save_training_state(training_state: Dict[str, Any]) -> None:
-    """
-    Сохраняет состояние в JSON-файл.
-    """
-    with open(TRAINING_STATE_FILE_PATH, "w", encoding="utf-8") as file_handle:
-        json.dump(training_state, file_handle, ensure_ascii=False, indent=2)
+    with open(TRAINING_STATE_FILE_PATH, "w", encoding="utf-8") as f:
+        json.dump(training_state, f, ensure_ascii=False, indent=2)
 
 
-# ===== 4. ОБНОВЛЕНИЕ СОСТОЯНИЯ ПРИ ВЫПОЛНЕНИИ УПРАЖНЕНИЯ =====
+# ===== 4. ОБНОВЛЕНИЕ СОСТОЯНИЯ =====
 
 def record_exercise_completion_for_date(exercise_key: str, performed_local_date: date) -> None:
-    """
-    Обновляет состояние: отмечает, что упражнение выполнено в указанный день.
-    - last_done_local_date = performed_local_date
-    - times_completed_this_week += 1
-    """
     if exercise_key not in EXERCISE_DEFINITIONS_BY_KEY:
         raise ValueError(f"Неизвестное упражнение: {exercise_key}")
 
     training_state: Dict[str, Any] = load_training_state()
     exercises_state: Dict[str, Any] = training_state["exercises"]
-    exercise_runtime_state: Dict[str, Any] = exercises_state[exercise_key]
+    runtime_state: Dict[str, Any] = exercises_state[exercise_key]
 
-    exercise_runtime_state["last_done_local_date"] = performed_local_date.isoformat()
-    exercise_runtime_state["times_completed_this_week"] = (
-        exercise_runtime_state.get("times_completed_this_week", 0) + 1
-    )
+    runtime_state["last_done_local_date"] = performed_local_date.isoformat()
+    runtime_state["times_completed_this_week"] = runtime_state.get("times_completed_this_week", 0) + 1
 
     save_training_state(training_state)
 
 
-# ===== 5. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ ОПТИМИЗАТОРА =====
+# ===== 5. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =====
 
 def compute_last_any_training_local_date(training_state: Dict[str, Any]) -> Optional[date]:
-    """
-    Находит максимальную (последнюю) дату выполнения среди всех упражнений.
-    Используется для предупреждения о "дырках" в журнале.
-    """
     exercises_state: Dict[str, Any] = training_state.get("exercises", {})
-    latest_date: Optional[date] = None
+    latest: Optional[date] = None
 
-    for exercise_runtime_state in exercises_state.values():
-        last_done_local_date_str: Optional[str] = exercise_runtime_state.get("last_done_local_date")
-        if last_done_local_date_str is None:
+    for runtime_state in exercises_state.values():
+        last_str: Optional[str] = runtime_state.get("last_done_local_date")
+        if not last_str:
             continue
         try:
-            parsed_date: date = date.fromisoformat(last_done_local_date_str)
+            d = date.fromisoformat(last_str)
         except ValueError:
             continue
-
-        if latest_date is None or parsed_date > latest_date:
-            latest_date = parsed_date
-
-    return latest_date
+        if latest is None or d > latest:
+            latest = d
+    return latest
 
 
 def compute_last_high_cns_training_local_date(training_state: Dict[str, Any]) -> Optional[date]:
-    """
-    Находит последнюю дату high CNS тренировки (по локальному времени).
-    Используется для правила: "не делать high CNS два дня подряд".
-    """
     exercises_state: Dict[str, Any] = training_state.get("exercises", {})
-    latest_high_cns_date: Optional[date] = None
+    latest: Optional[date] = None
 
-    for exercise_key, exercise_definition in EXERCISE_DEFINITIONS_BY_KEY.items():
-        if exercise_definition["cns_load_level"] != "high":
+    for exercise_key, definition in EXERCISE_DEFINITIONS_BY_KEY.items():
+        if definition["cns_load_level"] != "high":
             continue
 
-        exercise_runtime_state: Dict[str, Any] = exercises_state.get(exercise_key, {})
-        last_done_local_date_str: Optional[str] = exercise_runtime_state.get("last_done_local_date")
-        if last_done_local_date_str is None:
+        runtime_state: Dict[str, Any] = exercises_state.get(exercise_key, {})
+        last_str: Optional[str] = runtime_state.get("last_done_local_date")
+        if not last_str:
             continue
-
         try:
-            parsed_date: date = date.fromisoformat(last_done_local_date_str)
+            d = date.fromisoformat(last_str)
         except ValueError:
             continue
 
-        if latest_high_cns_date is None or parsed_date > latest_high_cns_date:
-            latest_high_cns_date = parsed_date
+        if latest is None or d > latest:
+            latest = d
+    return latest
 
-    return latest_high_cns_date
 
-
-# ===== 6. ГЛАВНЫЙ ОПТИМИЗАТОР: РЕКОМЕНДАЦИИ НА СЕГОДНЯ =====
+# ===== 6. ОПТИМИЗАТОР НА СЕГОДНЯ =====
 
 def get_training_recommendations_for_today() -> Dict[str, Any]:
-    """
-    Возвращает:
-    {
-      "must_do_today": [exercise_key, ...],
-      "optional_today": [...],
-      "cns_blocked_today": [...],
-      "not_ready_by_rest": [...],
-      "log_gap_warning": Optional[str]
-    }
-    """
     training_state: Dict[str, Any] = load_training_state()
-    current_local_date: date = get_current_local_date()
+    current_date: date = get_current_local_date()
 
-    # 1) Детектор "дырок" в журнале
-    last_any_training_local_date: Optional[date] = compute_last_any_training_local_date(training_state)
+    # 1) дырки в логах
+    last_any: Optional[date] = compute_last_any_training_local_date(training_state)
     log_gap_warning: Optional[str] = None
-    if last_any_training_local_date is not None:
-        days_since_last_log: int = (current_local_date - last_any_training_local_date).days
-        if days_since_last_log >= 2:
+    if last_any is not None:
+        days_since = (current_date - last_any).days
+        if days_since >= 2:
             log_gap_warning = (
-                f"Внимание: ты последний раз отмечал тренировки {last_any_training_local_date.isoformat()} "
-                f"(это было {days_since_last_log} дней назад).\n"
-                f"Если ты тренировался в эти дни, но не отмечал, рекомендации могут быть неточными. "
-                f"Сначала дозаполни пропуски через /done с выбором «вчера»."
+                f"Внимание: последние отмеченные тренировки были {last_any.isoformat()} "
+                f"(это {days_since} дней назад).\n"
+                f"Если ты тренировался, но не логировал, сначала дозаполни пропуски через /done с выбором «вчера»."
             )
 
-    # 2) high CNS правило
-    last_high_cns_training_local_date: Optional[date] = compute_last_high_cns_training_local_date(training_state)
-    yesterday_local_date: date = current_local_date - timedelta(days=1)
-    was_high_cns_yesterday: bool = last_high_cns_training_local_date == yesterday_local_date
+    # 2) high CNS два дня подряд
+    last_high: Optional[date] = compute_last_high_cns_training_local_date(training_state)
+    yesterday: date = current_date - timedelta(days=1)
+    was_high_yesterday: bool = last_high == yesterday
 
     must_do_today: List[str] = []
     optional_today: List[str] = []
@@ -329,44 +262,38 @@ def get_training_recommendations_for_today() -> Dict[str, Any]:
 
     exercises_state: Dict[str, Any] = training_state.get("exercises", {})
 
-    for exercise_key, exercise_definition in EXERCISE_DEFINITIONS_BY_KEY.items():
-        exercise_runtime_state: Dict[str, Any] = exercises_state.get(exercise_key, {
-            "last_done_local_date": None,
-            "times_completed_this_week": 0,
-        })
+    for exercise_key, definition in EXERCISE_DEFINITIONS_BY_KEY.items():
+        runtime_state: Dict[str, Any] = exercises_state.get(
+            exercise_key,
+            {"last_done_local_date": None, "times_completed_this_week": 0},
+        )
 
-        last_done_local_date_str: Optional[str] = exercise_runtime_state.get("last_done_local_date")
-        times_completed_this_week: int = exercise_runtime_state.get("times_completed_this_week", 0)
+        last_str: Optional[str] = runtime_state.get("last_done_local_date")
+        times_done: int = runtime_state.get("times_completed_this_week", 0)
 
-        if last_done_local_date_str is None:
-            hours_since_last_done: float = 1e6  # условно "очень давно"
+        if last_str is None:
+            hours_since_last = 1e6
         else:
             try:
-                last_done_local_date: date = date.fromisoformat(last_done_local_date_str)
-                days_since_last_done: int = (current_local_date - last_done_local_date).days
-                hours_since_last_done = days_since_last_done * 24.0
+                last_date = date.fromisoformat(last_str)
+                days_since_last = (current_date - last_date).days
+                hours_since_last = days_since_last * 24.0
             except ValueError:
-                hours_since_last_done = 1e6
+                hours_since_last = 1e6
 
-        is_rest_satisfied: bool = (
-            hours_since_last_done >= exercise_definition["minimal_rest_hours_between_sessions"]
-        )
+        rest_ok: bool = hours_since_last >= definition["minimal_rest_hours_between_sessions"]
+        remaining_this_week: int = max(0, definition["times_per_week_target"] - times_done)
+        is_high_cns: bool = definition["cns_load_level"] == "high"
 
-        remaining_times_this_week: int = max(
-            0,
-            exercise_definition["times_per_week_target"] - times_completed_this_week,
-        )
-
-        is_high_cns_exercise: bool = exercise_definition["cns_load_level"] == "high"
-        if is_high_cns_exercise and was_high_cns_yesterday:
+        if is_high_cns and was_high_yesterday:
             cns_blocked_today.append(exercise_key)
             continue
 
-        if not is_rest_satisfied:
+        if not rest_ok:
             not_ready_by_rest.append(exercise_key)
             continue
 
-        if remaining_times_this_week > 0:
+        if remaining_this_week > 0:
             must_do_today.append(exercise_key)
         else:
             optional_today.append(exercise_key)

@@ -16,6 +16,14 @@ from zoneinfo import ZoneInfo
 
 # Путь к JSON-файлу (можно переопределить через переменную окружения)
 TRAINING_STATE_FILE_PATH: str = os.getenv("TRAINING_STATE_FILE_PATH", "training_state.json")
+def ensure_training_state_directory_exists() -> None:
+    """
+    Гарантирует, что директория для TRAINING_STATE_FILE_PATH существует.
+    Если путь без директории (просто 'training_state.json'), ничего не делаем.
+    """
+    directory_path: str = os.path.dirname(TRAINING_STATE_FILE_PATH)
+    if directory_path:
+        os.makedirs(directory_path, exist_ok=True)
 
 # Часовой пояс пользователя
 USER_TIMEZONE: ZoneInfo = ZoneInfo("Europe/Warsaw")

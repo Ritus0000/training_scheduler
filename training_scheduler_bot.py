@@ -316,7 +316,8 @@ def main() -> None:
     if not telegram_bot_token:
         raise RuntimeError("Нужно задать TELEGRAM_BOT_TOKEN в переменных окружения.")
 
-    application = ApplicationBuilder().token(telegram_bot_token).build()
+    # КРИТИЧЕСКИЙ МОМЕНТ: отключаем старый Updater, чтобы не ловить баг в библиотеке
+    application = ApplicationBuilder().token(telegram_bot_token).updater(None).build()
 
     application.add_handler(CommandHandler("start", start_command_handler))
     application.add_handler(CommandHandler("today", today_command_handler))
@@ -335,7 +336,3 @@ def main() -> None:
 
     logger.info("Training scheduler bot started with JSON state.")
     application.run_polling()
-
-
-if __name__ == "__main__":
-    main()

@@ -179,8 +179,11 @@ def load_training_state() -> Dict[str, Any]:
 
 
 def save_training_state(training_state: Dict[str, Any]) -> None:
+    # Перед сохранением убеждаемся, что директория существует
+    ensure_training_state_directory_exists()
     with open(TRAINING_STATE_FILE_PATH, "w", encoding="utf-8") as f:
         json.dump(training_state, f, ensure_ascii=False, indent=2)
+
 
 
 # ===== 4. ОБНОВЛЕНИЕ СОСТОЯНИЯ =====

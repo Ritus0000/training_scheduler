@@ -9,14 +9,14 @@
 #   /done <...> — отметить выполненное упражнение (потом "сегодня" или "вчера")
 #
 # Перед запуском:
-#   pip install python-telegram-bot==20.6
+#   pip install -r requirements.txt
 #   export TELEGRAM_BOT_TOKEN=...  (на Railway — Variables)
 #
 # Все данные хранятся в JSON (training_state.json) через training_scheduler_json_logic.py.
 
 import logging
 import os
-from datetime import datetime, timedelta, time
+from datetime import date, datetime, timedelta, time
 from typing import List, Dict, Any, Optional
 
 from zoneinfo import ZoneInfo
@@ -47,8 +47,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger("training_scheduler_bot")
 
-
-# ===== 1. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =====
 
 def build_exercise_alias_mapping() -> Dict[str, str]:
     """
@@ -95,8 +93,6 @@ def resolve_exercise_key_from_user_text(user_input_exercise_text: str) -> Option
     normalized_user_input: str = user_input_exercise_text.strip().lower()
     return alias_mapping.get(normalized_user_input)
 
-
-# ===== 2. HANDLERS =====
 
 async def start_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
@@ -272,7 +268,7 @@ async def done_command_choose_day(update: Update, context: ContextTypes.DEFAULT_
 async def daily_reminder_job_callback(context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Ежедневное напоминание в 18:00 по локальному времени.
-    Использует те же рекомендации, что /today, но в сжётом виде.
+    Использует те же рекомендации, что /today, но в сжатом виде.
     """
     job_data: Dict[str, Any] = context.job.data or {}
     chat_id: Optional[int] = job_data.get("chat_id")
@@ -311,21 +307,21 @@ async def daily_reminder_job_callback(context: ContextTypes.DEFAULT_TYPE) -> Non
     await context.bot.send_message(chat_id=chat_id, text=text)
 
 
-# ===== 3. MAIN =====
-
 def main() -> None:
+    """
+    Точка входа.
+    Используется и локально, и на Railway (через main.py).
+    """
     telegram_bot_token: Optional[str] = os.getenv("TELEGRAM_BOT_TOKEN")
     if not telegram_bot_token:
         raise RuntimeError("Нужно задать TELEGRAM_BOT_TOKEN в переменных окружения.")
 
     application = ApplicationBuilder().token(telegram_bot_token).build()
 
-    # Команды
     application.add_handler(CommandHandler("start", start_command_handler))
     application.add_handler(CommandHandler("today", today_command_handler))
     application.add_handler(CommandHandler("exercises", exercises_command_handler))
 
-    # Диалог для /done
     conversation_handler_done = ConversationHandler(
         entry_points=[CommandHandler("done", done_command_entry)],
         states={
